@@ -1,0 +1,116 @@
+name: Push BM reproduction to Kaggle
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "experiments/dqi-reed-solomon-bm/**"
+      - ".github/workflows/kaggle-push.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  push-and-run-kaggle:
+    runs-on: ubuntu-latest
+    # Replace with the exact GitHub Environment name that stores KAGGLE_API_TOKEN.
+    environment: your_environment_name
+    timeout-minutes: 180
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL_ID: varistebernhard/rs-bm-reproduction
+      KERNEL_DIR: experiments/dqi-reed-solomon-bm
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install Kaggle CLI
+        run: |
+          python -m pip install --upgrade pip kaggle
+          kaggle --version
+
+      - name: Validate token and kernel metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${KAGGLE_API_TOKEN:-}" ]]; then
+            echo "::error::KAGGLE_API_TOKEN is empty. Check the Environment name and its secret."
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          folder = Path("experiments/dqi-reed-solomon-bm")
+          metadata = json.loads((folder / "kernel-metadata.json").read_text())
+          expected = {
+              "id": "varistebernhard/rs-bm-reproduction",
+              "code_file": "main.ipynb",
+              "language": "python",
+              "kernel_type": "notebook",
+              "is_private": "true",
+              "enable_gpu": "true",
+              "enable_internet": "true",
+              "machine_shape": "NvidiaTeslaT4",
+          }
+          for key, value in expected.items():
+              if metadata.get(key) != value:
+                  raise SystemExit(f"Invalid kernel metadata: {key}={metadata.get(key)!r}, expected {value!r}")
+          if not (folder / metadata["code_file"]).is_file():
+              raise SystemExit("Notebook file referenced by code_file is missing.")
+          print("Kernel metadata validated.")
+          PY
+
+      - name: Push notebook and start Kaggle run
+        run: kaggle kernels push -p "$KERNEL_DIR"
+
+      - name: Wait for Kaggle execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            set +e
+            status="$(kaggle kernels status "$KERNEL_ID" 2>&1)"
+            rc=$?
+            set -e
+            printf '%s\n' "$status"
+            if (( rc != 0 )); then
+              echo "::error::Unable to read Kaggle kernel status."
+              exit "$rc"
+            fi
+            if grep -Eiq 'KernelWorkerStatus\.COMPLETE|status[^[:alnum:]]*complete|completed successfully' <<<"$status"; then
+              echo "Kaggle run completed."
+              exit 0
+            fi
+            if grep -Eiq 'KernelWorkerStatus\.(ERROR|CANCELLED)|status[^[:alnum:]]*(error|failed|cancelled)' <<<"$status"; then
+              echo "::error::Kaggle kernel ended unsuccessfully."
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out waiting for the Kaggle kernel after 60 minutes."
+          exit 1
+
+      - name: Download Kaggle outputs
+        if: success()
+        run: |
+          mkdir -p kaggle-output
+          kaggle kernels output "$KERNEL_ID" -p kaggle-output -o
+
+      - name: Upload reproduction report as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rs-bm-reproduction-results
+          path: kaggle-output/
+          if-no-files-found: warn
