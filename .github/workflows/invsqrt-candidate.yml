@@ -1,0 +1,41 @@
+name: invsqrt candidate checks
+
+on:
+  push:
+    branches:
+      - "codex/**"
+    paths:
+      - "google-verifiable-quantum-circuit-compilation/verifiers/invsqrt/**"
+      - ".github/workflows/invsqrt-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip numpy pytest
+      - name: Compile Python sources
+        working-directory: google-verifiable-quantum-circuit-compilation/verifiers/invsqrt
+        run: python -m py_compile nr_reference_circuit.py verify_submission_invsqrt.py piecewise_linear_circuit.py compare_invsqrt_resources.py test_piecewise_linear.py
+      - name: Exhaustive classical error check
+        working-directory: google-verifiable-quantum-circuit-compilation/verifiers/invsqrt
+        run: python -m pytest -q -s test_piecewise_linear.py
+      - name: Build reduced-width candidate circuit
+        working-directory: google-verifiable-quantum-circuit-compilation/verifiers/invsqrt
+        run: python piecewise_linear_circuit.py /tmp/invsqrt-candidate.kmx --n-p 7 --skip-model --format kmx
+      - name: Run verifier on reduced test domain
+        working-directory: google-verifiable-quantum-circuit-compilation/verifiers/invsqrt
+        run: python verify_submission_invsqrt.py /tmp/invsqrt-candidate.kmx --format kmx --n-p 7 --max-x 256 --shots-per-x 1 --batch-size 256 --max-workers 1
+      - name: Compare benchmark-width resource counts
+        working-directory: google-verifiable-quantum-circuit-compilation/verifiers/invsqrt
+        run: python compare_invsqrt_resources.py --n-p 10
