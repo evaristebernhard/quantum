@@ -1,0 +1,3 @@
+# Large generated/input artifacts excluded from the initial GitHub upload
+/google-verifiable-quantum-circuit-compilation/sample_submission/dqi.kmb
+/google-verifiable-quantum-circuit-compilation/verifiers/dfthcsos/FeMoCo76o113e.fcidump
