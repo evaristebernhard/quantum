@@ -131,12 +131,27 @@ def fixed_point_model(n_p: int, xs: np.ndarray) -> np.ndarray:
                         (1 << DELTA_BITS) + (index << 9),
                         (2 << DELTA_BITS) + (index << 10))
     delta_q14 = m_q14 - base_q14
-    y0 = c0 - ((c1 * delta_q14) >> DELTA_BITS)
+    # Match the circuit's column-truncated Horner rows exactly: each delta
+    # bit contributes (c1 >> m) independently; do not multiply then truncate once.
+    horner_sub = np.zeros_like(xs)
+    for m in range(5, DELTA_BITS + 1):
+        delta_bit = (delta_q14 >> (DELTA_BITS - m)) & 1
+        horner_sub += delta_bit * (c1 >> m)
+    y0 = c0 - horner_sub
     if ((y0 <= 0) | (y0 >= 2**COEF_BITS)).any():
         raise OverflowError("Initial approximation does not fit its register.")
 
-    # T(y0^2): Q17 -> Q28, dropping the six least-significant product bits.
-    square = (y0 * y0) >> (2 * COEF_BITS - SQUARE_BITS)
+    # Match nr._square's column-truncated partial products. A single integer
+    # multiplication followed by >> 6 can carry discarded low-column terms into
+    # the retained result, while the actual circuit discards each term separately.
+    y_bits = {k: bit(y0, COEF_BITS - k) for k in range(1, COEF_BITS + 1)}
+    square = np.zeros_like(xs)
+    for k in range(1, COEF_BITS + 1):
+        if 2 * k <= SQUARE_BITS:
+            square += y_bits[k] << (SQUARE_BITS - 2 * k)
+        for ell in range(k + 1, COEF_BITS + 1):
+            if k + ell - 1 <= SQUARE_BITS:
+                square += (y_bits[k] & y_bits[ell]) << (SQUARE_BITS - (k + ell - 1))
 
     # T(M * square), preserving the reference's per-row truncation semantics.
     m_rows = [(bit(x_norm, i), i - 2 * n_p) for i in range(width)]
