@@ -1,0 +1,170 @@
+name: Full invsqrt verification on Kaggle CPU
+
+on:
+  push:
+    branches:
+      - "kaggle/**"
+    paths:
+      - "experiments/invsqrt-full-verification/**"
+      - "google-verifiable-quantum-circuit-compilation/verifiers/invsqrt/**"
+      - ".github/workflows/invsqrt-kaggle.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-verification:
+    runs-on: ubuntu-latest
+    # Environment name and secret name are both KAGGLE_API_TOKEN.
+    environment: KAGGLE_API_TOKEN
+    timeout-minutes: 350
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL_ID: varistebernhard/invsqrt-full-verification
+      KERNEL_DIR: experiments/invsqrt-full-verification
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Kaggle CLI
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip kaggle
+          kaggle --version
+
+      - name: Validate token and CPU-only Kaggle metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kaggle-output
+          if [[ -z "${KAGGLE_API_TOKEN:-}" ]]; then
+            echo "::error::KAGGLE_API_TOKEN is empty. Check the KAGGLE_API_TOKEN Environment and its secret."
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          folder = Path("experiments/invsqrt-full-verification")
+          metadata = json.loads((folder / "kernel-metadata.json").read_text())
+          expected = {
+              "id": "varistebernhard/invsqrt-full-verification",
+              "code_file": "main.ipynb",
+              "language": "python",
+              "kernel_type": "notebook",
+              "is_private": "true",
+              "enable_gpu": "false",
+              "enable_internet": "true",
+          }
+          for key, value in expected.items():
+              if metadata.get(key) != value:
+                  raise SystemExit(
+                      f"Invalid Kaggle metadata: {key}={metadata.get(key)!r}, expected {value!r}"
+                  )
+          if "machine_shape" in metadata:
+              raise SystemExit("CPU-only metadata must not specify machine_shape.")
+          notebook = json.loads((folder / "main.ipynb").read_text())
+          notebook_text = "\n".join(
+              "".join(cell.get("source", []))
+              for cell in notebook.get("cells", [])
+          )
+          for required in ("SHOTS_PER_X = 64", "verify_submission_invsqrt.py", "EXPECTED_SHOTS"):
+              if required not in notebook_text:
+                  raise SystemExit(f"Notebook is missing full-run requirement: {required}")
+          print("Validated private CPU-only Kaggle notebook and full verifier settings.")
+          PY
+
+      - name: Push notebook and start Kaggle execution
+        id: push-kaggle
+        shell: bash
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p "$KERNEL_DIR" 2>&1 | tee kaggle-output/kaggle-push.log
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for full Kaggle verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Up to 330 minutes of polling, leaving time for output retrieval and artifact upload.
+          for attempt in $(seq 1 660); do
+            set +e
+            status="$(kaggle kernels status "$KERNEL_ID" 2>&1)"
+            rc=$?
+            set -e
+            printf '[poll %s/660] %s\n' "$attempt" "$status" | tee -a kaggle-output/kaggle-status.log
+            if (( rc != 0 )); then
+              echo "::error::Unable to read Kaggle kernel status."
+              exit "$rc"
+            fi
+            if grep -Eiq 'KernelWorkerStatus\.COMPLETE|status[^[:alnum:]]*complete|completed successfully' <<<"$status"; then
+              echo "Kaggle kernel completed."
+              exit 0
+            fi
+            if grep -Eiq 'KernelWorkerStatus\.(ERROR|CANCELLED)|status[^[:alnum:]]*(error|failed|cancelled)' <<<"$status"; then
+              echo "::error::Kaggle kernel ended unsuccessfully."
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out waiting for Kaggle after 330 minutes. Output retrieval will still be attempted."
+          exit 1
+
+      # Always try to retrieve results and diagnostics, even if the Kaggle run failed.
+      - name: Download Kaggle outputs
+        if: always() && steps.push-kaggle.outputs.pushed == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p kaggle-output/notebook-files
+          if ! kaggle kernels output "$KERNEL_ID" -p kaggle-output/notebook-files -o 2>&1 | tee kaggle-output/kaggle-output-download.log; then
+            echo "Kaggle output download failed. Check the kernel page and workflow logs." \
+              > kaggle-output/OUTPUT_DOWNLOAD_FAILED.txt
+          fi
+          if ! find kaggle-output/notebook-files -type f -print -quit | grep -q .; then
+            echo "No notebook output files were retrieved." > kaggle-output/NO_OUTPUT_FILES.txt
+          fi
+
+      - name: Record workflow metadata
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          mkdir -p kaggle-output
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = {
+              "kernel_id": os.environ["KERNEL_ID"],
+              "job_status": os.environ.get("JOB_STATUS"),
+              "github_run_id": os.environ.get("GITHUB_RUN_ID_VALUE"),
+              "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT_VALUE"),
+              "github_sha": os.environ.get("GITHUB_SHA_VALUE"),
+              "github_ref": os.environ.get("GITHUB_REF_VALUE"),
+          }
+          Path("kaggle-output/workflow-metadata.json").write_text(
+              json.dumps(data, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invsqrt-full-verification-results
+          path: kaggle-output/
+          if-no-files-found: warn
+          retention-days: 30
