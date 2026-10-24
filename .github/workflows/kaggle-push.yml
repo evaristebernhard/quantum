@@ -16,8 +16,8 @@ permissions:
 jobs:
   push-and-run-kaggle:
     runs-on: ubuntu-latest
-    # Replace with the exact GitHub Environment name that stores KAGGLE_API_TOKEN.
-    environment: your_environment_name
+    # GitHub Environment name; it contains the KAGGLE_API_TOKEN secret.
+    environment: KAGGLE_API_TOKEN
     timeout-minutes: 180
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${KAGGLE_API_TOKEN:-}" ]]; then
-            echo "::error::KAGGLE_API_TOKEN is empty. Check the Environment name and its secret."
+            echo "::error::KAGGLE_API_TOKEN is empty. Check the KAGGLE_API_TOKEN Environment and its secret."
             exit 1
           fi
           python - <<'PY'
@@ -59,20 +59,25 @@ jobs:
               "language": "python",
               "kernel_type": "notebook",
               "is_private": "true",
-              "enable_gpu": "true",
+              "enable_gpu": "false",
               "enable_internet": "true",
-              "machine_shape": "NvidiaTeslaT4",
           }
           for key, value in expected.items():
               if metadata.get(key) != value:
                   raise SystemExit(f"Invalid kernel metadata: {key}={metadata.get(key)!r}, expected {value!r}")
+          if "machine_shape" in metadata:
+              raise SystemExit("CPU-only kernel metadata must not set machine_shape.")
           if not (folder / metadata["code_file"]).is_file():
               raise SystemExit("Notebook file referenced by code_file is missing.")
-          print("Kernel metadata validated.")
+          print("CPU-only kernel metadata validated.")
           PY
 
       - name: Push notebook and start Kaggle run
-        run: kaggle kernels push -p "$KERNEL_DIR"
+        id: push-kaggle
+        run: |
+          set -euo pipefail
+          kaggle kernels push -p "$KERNEL_DIR"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Wait for Kaggle execution
         shell: bash
@@ -101,16 +106,55 @@ jobs:
           echo "::error::Timed out waiting for the Kaggle kernel after 60 minutes."
           exit 1
 
+      # Run even if the Kaggle notebook failed, so partial logs/results can still be recovered.
       - name: Download Kaggle outputs
-        if: success()
+        if: always() && steps.push-kaggle.outputs.pushed == 'true'
+        continue-on-error: true
+        shell: bash
         run: |
           mkdir -p kaggle-output
-          kaggle kernels output "$KERNEL_ID" -p kaggle-output -o
+          if ! kaggle kernels output "$KERNEL_ID" -p kaggle-output -o; then
+            echo "Kaggle output download failed. Check the job log and Kaggle kernel page." \
+              > kaggle-output/OUTPUT_DOWNLOAD_FAILED.txt
+            exit 1
+          fi
+          if ! find kaggle-output -type f -print -quit | grep -q .; then
+            echo "The Kaggle output command returned no files." > kaggle-output/NO_OUTPUT_FILES.txt
+          fi
 
-      - name: Upload reproduction report as a workflow artifact
+      - name: Record workflow metadata
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+        run: |
+          mkdir -p kaggle-output
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = {
+              "kernel_id": os.environ["KERNEL_ID"],
+              "job_status": os.environ.get("JOB_STATUS"),
+              "github_run_id": os.environ.get("GITHUB_RUN_ID_VALUE"),
+              "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT_VALUE"),
+              "github_sha": os.environ.get("GITHUB_SHA_VALUE"),
+              "github_ref": os.environ.get("GITHUB_REF_VALUE"),
+          }
+          Path("kaggle-output/workflow-metadata.json").write_text(
+              json.dumps(data, indent=2) + "\n"
+          )
+          PY
+
+      - name: Upload reproduction data as a downloadable artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rs-bm-reproduction-results
           path: kaggle-output/
           if-no-files-found: warn
+          retention-days: 30
