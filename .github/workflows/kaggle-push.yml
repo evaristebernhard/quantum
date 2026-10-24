@@ -108,19 +108,22 @@ jobs:
       # Run even if the Kaggle notebook failed, so partial logs/results can still be recovered.
       - name: Download Kaggle outputs
         if: always() && steps.push-kaggle.outputs.pushed == 'true'
+        timeout-minutes: 6
         continue-on-error: true
         shell: bash
         run: |
+          set -uo pipefail
           mkdir -p kaggle-output
-          if ! kaggle kernels output "$KERNEL_ID" -p kaggle-output -o; then
-            echo "Kaggle output download failed. Check the job log and Kaggle kernel page." \
-              > kaggle-output/OUTPUT_DOWNLOAD_FAILED.txt
+          # Bound this call so the metadata and artifact steps still execute if Kaggle stalls.
+          timeout 300s kaggle kernels output "$KERNEL_ID" -p kaggle-output -o
+          rc=$?
+          if (( rc != 0 )); then
+            echo "Kaggle output download failed or timed out (exit $rc). Check the job log and Kaggle kernel page." > kaggle-output/OUTPUT_DOWNLOAD_FAILED.txt
             exit 1
           fi
           if ! find kaggle-output -type f -print -quit | grep -q .; then
             echo "The Kaggle output command returned no files." > kaggle-output/NO_OUTPUT_FILES.txt
           fi
-
       - name: Record workflow metadata
         if: always()
         env:
