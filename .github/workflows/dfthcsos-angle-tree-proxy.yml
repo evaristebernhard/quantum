@@ -24,13 +24,44 @@ jobs:
           python-version: "3.12"
       - name: Install NumPy
         run: python -m pip install --disable-pip-version-check numpy
-      - name: Run classical tree screen
+      - name: Run up to three greedy tree-search rounds
+        shell: bash
         run: |
-          python experiments/dfthcsos-angle-tree/tree_proxy.py \
-            --source-brot 12 \
-            --target-brot 8 \
-            --top-k 12 \
-            --out /tmp/dfthcsos-angle-tree
+          set -euo pipefail
+          root="google-verifiable-quantum-circuit-compilation/sample_submission/dfthcsos/submission.npz"
+          current="/tmp/dfthcsos-angle-tree/current.npz"
+          mkdir -p /tmp/dfthcsos-angle-tree
+          current_source="$root"
+          current_brot=12
+
+          for round in 1 2 3; do
+            out="/tmp/dfthcsos-angle-tree/round${round}"
+            python experiments/dfthcsos-angle-tree/tree_proxy.py \
+              --source "$current_source" \
+              --source-brot "$current_brot" \
+              --target-brot 8 \
+              --top-k 12 \
+              --out "$out"
+
+            improved=$(python -c 'import json,sys; r=json.load(open(sys.argv[1])); best=r["top_candidates"][0]["weighted_projector_distortion"]; base=r["baseline_reordered_projector_distortion"]; print("true" if best < base - 1e-12 else "false")' "$out/report.json")
+            if [ "$improved" = "true" ]; then
+              cp "$out/candidate_001.npz" "$current"
+              current_source="$current"
+              current_brot=8
+              echo "Round $round improved deterministic projector distortion."
+            else
+              echo "Round $round did not improve; retaining previous best and stopping."
+              break
+            fi
+
+            find "$out" -name 'candidate_*.npz' ! -name 'candidate_001.npz' -delete
+          done
+
+          if [ -f "$current" ]; then
+            cp "$current" /tmp/dfthcsos-angle-tree/best_candidate.npz
+          else
+            echo "No improving candidate was found."
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: dfthcsos-angle-tree-screen
