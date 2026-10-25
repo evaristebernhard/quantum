@@ -63,7 +63,7 @@ jobs:
               --source /tmp/dfthcsos-angle-tree/best_candidate.npz \
               --brot 8 \
               --batch-size 7 \
-              --lowbits 8 \\
+              --lowbits 8 \
               --samples 128 \
               --out /tmp/dfthcsos-angle-tree/edge-order
             cp /tmp/dfthcsos-angle-tree/edge-order/ordered_candidate.npz \
