@@ -76,7 +76,10 @@ def encode_vectors(vectors: np.ndarray, ordered_edges: np.ndarray, brot: int) ->
         work[:, parent] = flip * np.hypot(vp, vc)
         work[:, child] = 0.0
 
-    return signed_words % (1 << brot)
+    words = signed_words % (1 << brot)
+    if not np.all(((words >> (brot - 1)) & 1) == ((words >> (brot - 2)) & 1)):
+        raise AssertionError("signed-gauge encoding must make the top two word bits equal")
+    return words
 
 
 def tree_order_and_proxy(
