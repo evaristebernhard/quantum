@@ -1,0 +1,19 @@
+{
+  "id": "varistebernhard/dfthcsos-rb-probe",
+  "title": "DFTHC R-B Quick Probe",
+  "code_file": "main.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "false",
+  "dataset_sources": [
+    "kozykappa/quantum-ai-dataset",
+    "ahmedberatozer/df-thc-group-compression-factorization"
+  ],
+  "competition_sources": [
+    "google-verifiable-quantum-circuit-compilation"
+  ],
+  "kernel_sources": [],
+  "model_sources": []
+}
