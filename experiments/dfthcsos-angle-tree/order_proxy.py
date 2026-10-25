@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reorder commuting Givens edges to reduce the signed-QROM active-bit proxy."""
+"""Search valid Givens-edge orderings with a signed-QROM cost proxy."""
 from __future__ import annotations
 
 import argparse
@@ -9,14 +9,12 @@ from pathlib import Path
 import numpy as np
 
 
-def active_bit_masks(words: np.ndarray, brot: int, batch_size: int):
-    """Precompute the exact active difference-bit mask for every edge-column pair."""
-    payload_bits = brot - 1
-    payload_mask = (1 << payload_bits) - 1
+def active_bit_masks(words: np.ndarray, brot: int):
+    """Precompute row-pair bit masks for every angle column and column pair."""
+    payload_mask = (1 << (brot - 1)) - 1
     payload = np.asarray(words, dtype=np.int64) & payload_mask
     if payload.shape[0] % 2:
         payload = np.vstack((payload, payload[-1:]))
-
     pair_diff = payload[0::2] ^ payload[1::2]
     num_angles = payload.shape[1]
     column_mask = np.bitwise_or.reduce(pair_diff, axis=0)
@@ -26,15 +24,7 @@ def active_bit_masks(words: np.ndarray, brot: int, batch_size: int):
     return column_mask, pair_mask
 
 
-def active_counts(
-    permutation: np.ndarray, num_angles: int, batch_size: int,
-    column_mask: np.ndarray, pair_mask: np.ndarray,
-) -> tuple[int, ...]:
-    """Count active packed payload bits in each XOR-delta batch.
-
-    For batch k>0, the row-pair difference at a slot is the XOR of the
-    pair-difference masks for the current and previous-batch columns.
-    """
+def active_counts(permutation, num_angles, batch_size, column_mask, pair_mask):
     num_batches = (num_angles + batch_size - 1) // batch_size
     padded = np.full(num_batches * batch_size, -1, dtype=np.int64)
     padded[:num_angles] = permutation
@@ -61,9 +51,76 @@ def active_counts(
     return tuple(counts)
 
 
-def score_counts(counts: tuple[int, ...]) -> tuple[int, int, int]:
-    """Lexicographic objective: minimize peak workspace, then total active bits."""
-    return max(counts, default=0), sum(counts), sum(x * x for x in counts)
+def qrom_node_cost(words, permutation, brot, batch_size, lowbits):
+    """Count recursive QROM split/leaf Toffoli proxies, excluding fixed controls.
+
+    Equality of compressed table rows is exactly equality of the packed first
+    rows and packed XOR differences. Prefix sums of adjacent signature changes
+    make each subtree-constant query O(1).
+    """
+    payload_bits = brot - 1
+    if batch_size * payload_bits > 63:
+        raise ValueError("this proxy currently requires batch_size * (brot - 1) <= 63")
+    num_rows, num_angles = words.shape
+    num_batches = (num_angles + batch_size - 1) // batch_size
+    padded = np.zeros((num_rows, num_batches * batch_size), dtype=np.int64)
+    padded[:, :num_angles] = words[:, permutation]
+    batches = padded.reshape(num_rows, num_batches, batch_size).transpose(1, 0, 2)
+    deltas = batches.copy()
+    deltas[1:] ^= batches[:-1]
+
+    total_cost = 0
+    per_batch = []
+    payload_mask = (1 << payload_bits) - 1
+    for k in range(num_batches):
+        delta = deltas[k]
+        if delta.shape[0] % 2:
+            delta = np.vstack((delta, delta[-1:]))
+        first = delta[0::2]
+        diff = first ^ delta[1::2]
+        pair_count = first.shape[0]
+        base_pack = np.zeros(pair_count, dtype=np.uint64)
+        diff_pack = np.zeros(pair_count, dtype=np.uint64)
+        for slot in range(batch_size):
+            shift = slot * payload_bits
+            base_pack |= (first[:, slot] & payload_mask).astype(np.uint64) << shift
+            diff_pack |= (diff[:, slot] & payload_mask).astype(np.uint64) << shift
+
+        change = (base_pack[:-1] != base_pack[1:]) | (diff_pack[:-1] != diff_pack[1:])
+        prefix = np.concatenate(([0], np.cumsum(change, dtype=np.int64)))
+        table_rows = pair_count
+
+        def constant_interval(lo: int, end: int) -> bool:
+            return end - lo <= 1 or prefix[end - 1] - prefix[lo] == 0
+
+        n = (table_rows - 1).bit_length()
+        low = min(lowbits, n)
+        high_bits = n - low
+        cost = 0
+
+        def node(lo: int, hi: int, offset: int) -> None:
+            nonlocal cost
+            if lo + offset >= table_rows:
+                return
+            end = min(hi + offset, table_rows)
+            if hi - lo == 1 or constant_interval(lo + offset, end):
+                return
+            mid = (lo + hi) // 2
+            if mid + offset >= table_rows:
+                node(lo, mid, offset)
+                return
+            if hi - lo == 2:
+                cost += 1
+                return
+            cost += 2
+            node(lo, mid, offset)
+            node(mid, hi, offset)
+
+        for high in range(1 << high_bits):
+            node(0, 1 << low, high << low)
+        per_batch.append(cost)
+        total_cost += cost
+    return int(total_cost), tuple(int(x) for x in per_batch)
 
 
 def rooted_parent(edges: np.ndarray, num_orbitals: int) -> np.ndarray:
@@ -80,27 +137,55 @@ def rooted_parent(edges: np.ndarray, num_orbitals: int) -> np.ndarray:
     return parent
 
 
-def is_ancestor(ancestor: int, node: int, parent: np.ndarray) -> bool:
-    current = node
-    while current >= 0:
-        if current == ancestor:
-            return True
-        current = int(parent[current])
-    return False
+def build_precedence(edges: np.ndarray, parent: np.ndarray):
+    """Parent edges precede child edges; sibling edges keep their existing order."""
+    edge_count = len(edges)
+    edge_index_by_child = {int(child): i for i, (_, child) in enumerate(edges)}
+    successors = [set() for _ in range(edge_count)]
+    indegree = np.zeros(edge_count, dtype=np.int64)
+
+    def add(a: int, b: int) -> None:
+        if b not in successors[a]:
+            successors[a].add(b)
+            indegree[b] += 1
+
+    for i, (p, c) in enumerate(edges):
+        p = int(p)
+        if p != 0:
+            add(edge_index_by_child[p], i)
+
+    by_parent: dict[int, list[int]] = {}
+    for i, (p, _) in enumerate(edges):
+        by_parent.setdefault(int(p), []).append(i)
+    for indices in by_parent.values():
+        for a, b in zip(indices, indices[1:]):
+            add(a, b)
+    return successors, indegree
 
 
-def can_swap_adjacent(
-    edge_a: np.ndarray, edge_b: np.ndarray, parent: np.ndarray
-) -> bool:
-    p, c = map(int, edge_a)
-    q, d = map(int, edge_b)
-    if len({p, c, q, d}) != 4:
-        return False
-    # Disjoint rotations commute, but an ancestor edge must remain before
-    # every descendant edge to satisfy the verifier's tree-order contract.
-    if is_ancestor(c, q, parent) or is_ancestor(d, p, parent):
-        return False
-    return True
+def random_topological_order(successors, base_indegree, rng):
+    indegree = base_indegree.copy()
+    ready = [i for i, degree in enumerate(indegree) if degree == 0]
+    order = []
+    while ready:
+        pick = int(rng.integers(len(ready)))
+        node = ready.pop(pick)
+        order.append(node)
+        for child in successors[node]:
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                ready.append(child)
+    if len(order) != len(indegree):
+        raise ValueError("edge precedence constraints contain a cycle")
+    return np.asarray(order, dtype=np.int64)
+
+
+def score_order(permutation, words, brot, batch_size, lowbits, column_mask, pair_mask):
+    active = active_counts(permutation, words.shape[1], batch_size, column_mask, pair_mask)
+    qrom_cost, per_batch_qrom = qrom_node_cost(words, permutation, brot, batch_size, lowbits)
+    # Peak width first, then active select-swap bits, then recursive QROM Toffolis.
+    score = (max(active, default=0), sum(active), qrom_cost, sum(x * x for x in active))
+    return score, active, per_batch_qrom
 
 
 def main() -> None:
@@ -108,11 +193,15 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--brot", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=7)
-    parser.add_argument("--max-steps", type=int, default=100)
+    parser.add_argument("--lowbits", type=int, default=8)
+    parser.add_argument("--samples", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=20261025)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    if args.brot < 2 or args.batch_size < 1 or args.max_steps < 0:
-        raise ValueError("invalid brot, batch-size, or max-steps")
+    if args.brot < 2 or args.batch_size < 1 or args.samples < 1:
+        raise ValueError("invalid brot, batch-size, or samples")
+    if args.batch_size * (args.brot - 1) > 63:
+        raise ValueError("batch-size * (brot - 1) must be <= 63")
 
     with np.load(args.source, allow_pickle=False) as loaded:
         data = {key: np.array(loaded[key]) for key in loaded.files}
@@ -125,40 +214,35 @@ def main() -> None:
     if not np.all(((words >> (args.brot - 1)) & 1) == ((words >> (args.brot - 2)) & 1)):
         raise ValueError("expected signed-gauge words with equal top two bits")
 
-    num_angles = words.shape[1]
     parent = rooted_parent(edges, words.shape[1] + 1)
-    column_mask, pair_mask = active_bit_masks(words, args.brot, args.batch_size)
-    permutation = np.arange(num_angles, dtype=np.int64)
-    counts = active_counts(permutation, num_angles, args.batch_size, column_mask, pair_mask)
-    initial_score = score_counts(counts)
-    accepted = []
+    successors, indegree = build_precedence(edges, parent)
+    column_mask, pair_mask = active_bit_masks(words, args.brot)
+    identity = np.arange(words.shape[1], dtype=np.int64)
+    initial_score, initial_active, initial_qrom = score_order(
+        identity, words, args.brot, args.batch_size, args.lowbits, column_mask, pair_mask
+    )
 
-    for _ in range(args.max_steps):
-        best_score = score_counts(counts)
-        best_position = None
-        best_counts = counts
-        for pos in range(num_angles - 1):
-            if not can_swap_adjacent(edges[permutation[pos]], edges[permutation[pos + 1]], parent):
-                continue
-            trial = permutation.copy()
-            trial[pos], trial[pos + 1] = trial[pos + 1], trial[pos]
-            trial_counts = active_counts(trial, num_angles, args.batch_size, column_mask, pair_mask)
-            trial_score = score_counts(trial_counts)
-            if trial_score < best_score:
-                best_score = trial_score
-                best_position = pos
-                best_counts = trial_counts
-        if best_position is None:
-            break
-        pos = best_position
-        a, b = int(permutation[pos]), int(permutation[pos + 1])
-        permutation[pos], permutation[pos + 1] = permutation[pos + 1], permutation[pos]
-        counts = best_counts
-        accepted.append({"position": pos, "swapped_columns": [a, b], "score": list(best_score)})
+    rng = np.random.default_rng(args.seed)
+    seen = {tuple(identity.tolist())}
+    best_perm = identity.copy()
+    best_score, best_active, best_qrom = initial_score, initial_active, initial_qrom
+    sampled = 0
+    for _ in range(args.samples):
+        permutation = random_topological_order(successors, indegree, rng)
+        key = tuple(permutation.tolist())
+        if key in seen:
+            continue
+        seen.add(key)
+        sampled += 1
+        score, active, qrom = score_order(
+            permutation, words, args.brot, args.batch_size, args.lowbits, column_mask, pair_mask
+        )
+        if score < best_score:
+            best_perm, best_score, best_active, best_qrom = permutation, score, active, qrom
 
     reordered = dict(data)
-    reordered["tree_edges"] = edges[permutation]
-    reordered["angle_words"] = words[:, permutation]
+    reordered["tree_edges"] = edges[best_perm]
+    reordered["angle_words"] = words[:, best_perm]
     args.out.mkdir(parents=True, exist_ok=True)
     output_npz = args.out / "ordered_candidate.npz"
     np.savez_compressed(output_npz, **reordered)
@@ -167,14 +251,19 @@ def main() -> None:
         "source": str(args.source),
         "brot": args.brot,
         "batch_size": args.batch_size,
-        "active_bits_before": list(initial_score),
-        "per_batch_active_bits_before": list(active_counts(np.arange(num_angles), num_angles, args.batch_size, column_mask, pair_mask)),
-        "active_bits_after": list(score_counts(counts)),
-        "per_batch_active_bits_after": list(counts),
-        "accepted_adjacent_swaps": len(accepted),
-        "swaps": accepted,
+        "lowbits": args.lowbits,
+        "sampled_topological_orders": sampled,
+        "initial_score": list(initial_score),
+        "best_score": list(best_score),
+        "active_bits_before": list(initial_active),
+        "active_bits_after": list(best_active),
+        "qrom_node_toffoli_proxy_before": int(sum(initial_qrom)),
+        "qrom_node_toffoli_proxy_after": int(sum(best_qrom)),
+        "per_batch_qrom_proxy_before": list(initial_qrom),
+        "per_batch_qrom_proxy_after": list(best_qrom),
+        "permutation": best_perm.tolist(),
         "artifact": output_npz.name,
-        "warning": "This minimizes a select-swap QROM active-bit proxy, not exact Toffoli cost. Physical vectors should be unchanged because only disjoint commuting edges are swapped. Run the unchanged official verifier after building matching ANGLE circuits.",
+        "warning": "This is a structural QROM proxy, not exact circuit cost or official score. Only disjoint commuting edges are reordered; parent-before-child and sibling order are preserved.",
     }
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
