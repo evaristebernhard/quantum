@@ -201,7 +201,13 @@ def main() -> None:
     if np.any(source_words < 0) or np.any(source_words >= (1 << args.source_brot)):
         raise ValueError("source angle words do not fit source-brot")
     source_tree = canonical_tree(data["tree_edges"])
-    target_vectors = decode_words(source_words, data["tree_edges"], args.source_brot)
+    if "angle_tree_target_vectors" in data:
+        target_vectors = np.asarray(data["angle_tree_target_vectors"], dtype=np.float64)
+        expected_shape = (source_words.shape[0], source_words.shape[1] + 1)
+        if target_vectors.shape != expected_shape:
+            raise ValueError(f"saved target vectors must have shape {expected_shape}")
+    else:
+        target_vectors = decode_words(source_words, data["tree_edges"], args.source_brot)
     row_weights = proxy_row_weights(target_vectors, np.asarray(data["W"], dtype=np.float64))
     orbital_weights = np.sum(row_weights[:, None] * np.square(target_vectors), axis=0)
 
@@ -254,6 +260,7 @@ def main() -> None:
         candidate_data = dict(data)
         candidate_data["tree_edges"] = row["tree_edges"]
         candidate_data["angle_words"] = row["angle_words"]
+        candidate_data["angle_tree_target_vectors"] = target_vectors
         rank_r, bases_b, _ = np.asarray(data["W"]).shape
         num_orbitals = target_vectors.shape[1]
         candidate_data["U"] = row["decoded"][num_orbitals:].reshape(rank_r, bases_b, num_orbitals)
