@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 55
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-      KERNEL_ID: varistebernhard/dfthcsos-rb-probe
+      KERNEL_ID: varistebernhard/dfthc-r-b-quick-probe
       KERNEL_DIR: experiments/dfthcsos-rb-probe
 
     steps:
@@ -45,7 +45,7 @@ jobs:
           from pathlib import Path
           folder = Path("experiments/dfthcsos-rb-probe")
           m = json.loads((folder / "kernel-metadata.json").read_text())
-          assert m["id"] == "varistebernhard/dfthcsos-rb-probe"
+          assert m["id"] == "varistebernhard/dfthc-r-b-quick-probe"
           assert m["enable_gpu"] == "true"
           assert m["code_file"] == "main.ipynb"
           n = json.loads((folder / "main.ipynb").read_text())
