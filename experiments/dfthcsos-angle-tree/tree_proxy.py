@@ -237,9 +237,8 @@ def main() -> None:
         candidate_data["tree_edges"] = ordered_edges
         candidate_data["angle_words"] = words
         rank_r, bases_b, _ = np.asarray(data["W"]).shape
-        candidate_data["U"] = decoded[target_vectors.shape[1] - rank_r * bases_b :].reshape(
-            rank_r, bases_b, target_vectors.shape[1]
-        )
+        num_orbitals = target_vectors.shape[1]
+        candidate_data["U"] = decoded[num_orbitals:].reshape(rank_r, bases_b, num_orbitals)
         np.savez_compressed(args.out / f"candidate_{rank:03d}.npz", **candidate_data)
         results.append(
             {
