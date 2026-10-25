@@ -115,20 +115,23 @@ def tree_order_and_proxy(
 
 
 def proxy_row_weights(vectors: np.ndarray, w: np.ndarray) -> np.ndarray:
-    """Build sensitivity weights without loading the 128 MB FCIDUMP.
+    """Build exact two-body first-order sensitivity weights without forming X or N**4 tensors.
 
-    Two-body weights follow the bound 8 ||Y_rb||_F**2 s**2. One-body weights
-    are balanced to the same total, because exact h1-prime eigenvalue weights
-    require the later physical evaluation.
+    Let K = W W^T and H[b,b'] = (u_b dot u_b')**2. Then
+    ||Y_b||_F**2 = (K H K)[b,b], where Y_b = sum_c w_bc X_c.
+    One-body rows are balanced to the same total proxy weight; exact eigenvalue
+    weights require the later physical evaluation.
     """
     n = vectors.shape[1]
     rank_r, bases_b, copies_c = w.shape
     if vectors.shape[0] != n + rank_r * bases_b:
         raise ValueError("angle table row count is inconsistent with W shape")
     u = vectors[n:].reshape(rank_r, bases_b, n)
-    x = np.einsum("rbp,rbq,rbc->rcpq", u, u, w, optimize=True)
-    y = np.einsum("rbc,rcpq->rbpq", w, x, optimize=True)
-    two_body = 4.0 * np.einsum("rbpq,rbpq->rb", y, y, optimize=True).reshape(-1)
+    k = np.einsum("rbc,rdc->rbd", w, w, optimize=True)
+    gram = np.einsum("rbp,rdp->rbd", u, u, optimize=True)
+    projector_gram = np.square(gram)
+    y_norm2 = np.einsum("rbi,rij,rbj->rb", k, projector_gram, k, optimize=True)
+    two_body = 4.0 * np.maximum(y_norm2, 0.0).reshape(-1)
     total = float(two_body.sum())
     if not np.isfinite(total) or total <= 1e-30:
         two_body = np.ones(rank_r * bases_b, dtype=np.float64)
