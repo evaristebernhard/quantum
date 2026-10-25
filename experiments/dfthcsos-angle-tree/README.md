@@ -47,7 +47,7 @@ The perturbation of the Gram tensor caused by a projector perturbation \(D\) in 
 
 The proxy is an expected-error / sensitivity bound, not a prediction of the official score. Deterministic rounding, interactions among rows, the one-body eigenvector assignment, the SOS gap, normalization, and actual ANGLE-circuit cost can change the ranking. Only candidates that pass the unchanged official verifier count as valid.
 
-The current prototype uses ordinary unsigned modular angle words. It does not yet enforce the signed-gauge bit relation used by the compressed lookup circuit, and it does not optimize the global topological ordering of edges. Both affect ANGLE-table/QROM cost and belong to the next stage; the present screen only ranks physical-distortion proxies.
+The current prototype re-encodes shortlisted trees in the signed angle gauge, so at brot=8 the top two word bits are equal. It still does not compile ANGLE circuits or optimize the global topological ordering of edges; both affect lookup cost and belong to the next stage.
 
 ## Run
 
