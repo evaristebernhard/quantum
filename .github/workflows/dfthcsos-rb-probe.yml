@@ -1,0 +1,122 @@
+name: DF-THC R-B quick probe on Kaggle GPU
+
+on:
+  push:
+    branches:
+      - "kaggle-probe/**"
+    paths:
+      - "experiments/dfthcsos-rb-probe/**"
+      - ".github/workflows/dfthcsos-rb-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  run-probe:
+    runs-on: ubuntu-latest
+    environment: KAGGLE_API_TOKEN
+    timeout-minutes: 55
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KERNEL_ID: varistebernhard/dfthcsos-rb-probe
+      KERNEL_DIR: experiments/dfthcsos-rb-probe
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Kaggle CLI
+        run: |
+          python -m pip install --upgrade pip kaggle
+          kaggle --version
+
+      - name: Validate GPU probe metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          folder = Path("experiments/dfthcsos-rb-probe")
+          m = json.loads((folder / "kernel-metadata.json").read_text())
+          assert m["id"] == "varistebernhard/dfthcsos-rb-probe"
+          assert m["enable_gpu"] == "true"
+          assert m["code_file"] == "main.ipynb"
+          n = json.loads((folder / "main.ipynb").read_text())
+          text = "\n".join("".join(c.get("source", [])) for c in n["cells"])
+          for token in ("R=27, B=54", "steps=1500", "steps=3000", "SCREEN_ONLY_NOT_OFFICIALLY_VERIFIED"):
+              assert token in text, f"Missing probe marker: {token}"
+          print("Quick probe metadata validated; GPU enabled; no official full verifier.")
+          PY
+
+      - name: Push probe notebook to Kaggle
+        id: push-kaggle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kaggle-output
+          kaggle kernels push -p "$KERNEL_DIR" 2>&1 | tee kaggle-output/kaggle-push.log
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for short GPU probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 135); do
+            set +e
+            status="$(kaggle kernels status "$KERNEL_ID" 2>&1)"
+            rc=$?
+            set -e
+            printf '[poll %s/135] %s\n' "$attempt" "$status" | tee -a kaggle-output/kaggle-status.log
+            if (( rc != 0 )); then
+              echo "::error::Unable to read Kaggle kernel status."
+              exit "$rc"
+            fi
+            if grep -Eiq 'KernelWorkerStatus\.COMPLETE|status[^[:alnum:]]*complete|completed successfully' <<<"$status"; then
+              echo "Kaggle probe completed."
+              exit 0
+            fi
+            if grep -Eiq 'KernelWorkerStatus\.(ERROR|CANCELLED)|status[^[:alnum:]]*(error|failed|cancelled)' <<<"$status"; then
+              echo "::error::Kaggle probe ended unsuccessfully."
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::Timed out after 45 minutes; attempting output retrieval."
+          exit 1
+
+      - name: Download probe outputs
+        if: always() && steps.push-kaggle.outputs.pushed == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p kaggle-output/notebook-files
+          kaggle kernels output "$KERNEL_ID" -p kaggle-output/notebook-files -o 2>&1 | tee kaggle-output/kaggle-output-download.log || true
+          if ! find kaggle-output/notebook-files -type f -print -quit | grep -q .; then
+            echo "No output files were retrieved." > kaggle-output/NO_OUTPUT_FILES.txt
+          fi
+
+      - name: Record workflow metadata
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p kaggle-output
+          printf '{"job_status":"%s","run_id":"%s","sha":"%s","kernel_id":"%s"}\n' "$JOB_STATUS" "$RUN_ID" "$RUN_SHA" "$KERNEL_ID" > kaggle-output/workflow-metadata.json
+
+      - name: Upload probe results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dfthcsos-rb-probe-results
+          path: kaggle-output/
+          if-no-files-found: warn
+          retention-days: 30
