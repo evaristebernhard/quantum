@@ -225,31 +225,48 @@ def main() -> None:
         key=lambda row: row[0],
     )
     args.out.mkdir(parents=True, exist_ok=True)
-    results = []
-    for rank, (proxy, candidate, removed, added) in enumerate(shortlist, start=1):
+    screened = []
+    for proxy_rank, (proxy, candidate, removed, added) in enumerate(shortlist, start=1):
         _, ordered_edges, _ = tree_order_and_proxy(candidate, orbital_weights)
         words = encode_vectors(target_vectors, ordered_edges, args.target_brot)
         decoded = decode_words(words, ordered_edges, args.target_brot)
         distortion = weighted_projector_distortion(target_vectors, decoded, row_weights)
-        ratio = proxy / base_proxy if base_proxy else float("nan")
-
-        candidate_data = dict(data)
-        candidate_data["tree_edges"] = ordered_edges
-        candidate_data["angle_words"] = words
-        rank_r, bases_b, _ = np.asarray(data["W"]).shape
-        num_orbitals = target_vectors.shape[1]
-        candidate_data["U"] = decoded[num_orbitals:].reshape(rank_r, bases_b, num_orbitals)
-        np.savez_compressed(args.out / f"candidate_{rank:03d}.npz", **candidate_data)
-        results.append(
+        screened.append(
             {
-                "rank": rank,
+                "proxy_rank": proxy_rank,
                 "proxy_J": proxy,
-                "proxy_ratio_vs_reordered_baseline": ratio,
+                "proxy_ratio_vs_reordered_baseline": proxy / base_proxy if base_proxy else float("nan"),
                 "weighted_projector_distortion": distortion,
                 "removed_edge": list(removed),
                 "added_edge": list(added),
-                "tree_edges": ordered_edges.tolist(),
-                "artifact": f"candidate_{rank:03d}.npz",
+                "tree_edges": ordered_edges,
+                "angle_words": words,
+                "decoded": decoded,
+            }
+        )
+
+    screened.sort(key=lambda row: row["weighted_projector_distortion"])
+    results = []
+    for rank, row in enumerate(screened, start=1):
+        candidate_data = dict(data)
+        candidate_data["tree_edges"] = row["tree_edges"]
+        candidate_data["angle_words"] = row["angle_words"]
+        rank_r, bases_b, _ = np.asarray(data["W"]).shape
+        num_orbitals = target_vectors.shape[1]
+        candidate_data["U"] = row["decoded"][num_orbitals:].reshape(rank_r, bases_b, num_orbitals)
+        artifact = f"candidate_{rank:03d}.npz"
+        np.savez_compressed(args.out / artifact, **candidate_data)
+        results.append(
+            {
+                "rank_by_deterministic_distortion": rank,
+                "rank_by_proxy": row["proxy_rank"],
+                "proxy_J": row["proxy_J"],
+                "proxy_ratio_vs_reordered_baseline": row["proxy_ratio_vs_reordered_baseline"],
+                "weighted_projector_distortion": row["weighted_projector_distortion"],
+                "removed_edge": row["removed_edge"],
+                "added_edge": row["added_edge"],
+                "tree_edges": row["tree_edges"].tolist(),
+                "artifact": artifact,
             }
         )
 
