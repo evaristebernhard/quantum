@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Screen single-edge Givens-tree swaps with a quantization-sensitivity proxy.
+
+This script is deliberately classical and does not invoke the official verifier.
+Candidate NPZs are research artifacts until their matching ANGLE circuits pass it.
+"""
+from __future__ import annotations
+
+import argparse
+import heapq
+import json
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SOURCE = ROOT / "google-verifiable-quantum-circuit-compilation/sample_submission/dfthcsos/submission.npz"
+
+
+def canonical_tree(edges: np.ndarray | Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    return tuple(sorted(tuple(sorted((int(a), int(b)))) for a, b in np.asarray(list(edges), dtype=np.int64)))
+
+
+def decode_words(words: np.ndarray, edges: np.ndarray, brot: int) -> np.ndarray:
+    """Decode unsigned angle words; negative signed words are represented modulo 2**brot."""
+    words = np.asarray(words, dtype=np.int64)
+    edges = np.asarray(edges, dtype=np.int64)
+    vectors = np.zeros((words.shape[0], words.shape[1] + 1), dtype=np.float64)
+    vectors[:, 0] = 1.0
+    for j, (parent, child) in enumerate(edges):
+        vp = vectors[:, parent].copy()
+        vc = vectors[:, child].copy()
+        theta = np.pi * words[:, j] / (1 << (brot - 1))
+        co, si = np.cos(theta), np.sin(theta)
+        vectors[:, parent] = co * vp - si * vc
+        vectors[:, child] = si * vp + co * vc
+    return vectors
+
+
+def encode_vectors(vectors: np.ndarray, ordered_edges: np.ndarray, brot: int) -> np.ndarray:
+    """Inverse Givens elimination, then round angles modulo the unsigned word range."""
+    work = np.asarray(vectors, dtype=np.float64).copy()
+    edges = np.asarray(ordered_edges, dtype=np.int64)
+    num_angles = work.shape[1] - 1
+    if edges.shape != (num_angles, 2):
+        raise ValueError(f"expected {(num_angles, 2)} ordered edges, got {edges.shape}")
+    theta = np.zeros((work.shape[0], num_angles), dtype=np.float64)
+    for j in reversed(range(num_angles)):
+        parent, child = edges[j]
+        vp = work[:, parent].copy()
+        vc = work[:, child].copy()
+        theta[:, j] = np.arctan2(vc, vp)
+        work[:, parent] = np.hypot(vp, vc)
+        work[:, child] = 0.0
+    step = np.pi / (1 << (brot - 1))
+    words = np.rint(theta / step).astype(np.int64) % (1 << brot)
+    return words
+
+
+def tree_order_and_proxy(
+    tree: tuple[tuple[int, int], ...], orbital_weights: np.ndarray
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Root a tree at 0, sort siblings by descending subtree mass, and compute J(T)."""
+    d = np.asarray(orbital_weights, dtype=np.float64)
+    n = d.size
+    if len(tree) != n - 1:
+        raise ValueError(f"a tree on {n} vertices must have {n - 1} edges")
+    adjacency: list[list[int]] = [[] for _ in range(n)]
+    for a, b in tree:
+        if a == b or not (0 <= a < n and 0 <= b < n):
+            raise ValueError("invalid tree edge")
+        adjacency[a].append(b)
+        adjacency[b].append(a)
+
+    parent = np.full(n, -2, dtype=np.int64)
+    parent[0] = -1
+    traversal = [0]
+    for p in traversal:
+        for c in adjacency[p]:
+            if c == parent[p]:
+                continue
+            if parent[c] != -2:
+                raise ValueError("edges contain a cycle")
+            parent[c] = p
+            traversal.append(c)
+    if len(traversal) != n:
+        raise ValueError("edges are disconnected")
+
+    children: list[list[int]] = [[] for _ in range(n)]
+    for v in range(1, n):
+        children[int(parent[v])].append(v)
+
+    mass = d.copy()
+    for v in reversed(traversal[1:]):
+        mass[int(parent[v])] += mass[v]
+    for p in range(n):
+        children[p].sort(key=lambda c: (-mass[c], c))
+
+    proxy = 0.0
+    for p in range(n):
+        proxy += len(children[p]) * d[p]
+        proxy += sum((rank + 1) * mass[c] for rank, c in enumerate(children[p]))
+
+    ordered: list[tuple[int, int]] = []
+
+    def visit(p: int) -> None:
+        for c in children[p]:
+            ordered.append((p, c))
+            visit(c)
+
+    visit(0)
+    return float(proxy), np.asarray(ordered, dtype=np.int64), mass
+
+
+def proxy_row_weights(vectors: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Build sensitivity weights without loading the 128 MB FCIDUMP.
+
+    Two-body weights follow the bound 8 ||Y_rb||_F**2 s**2. One-body weights
+    are balanced to the same total, because exact h1-prime eigenvalue weights
+    require the later physical evaluation.
+    """
+    n = vectors.shape[1]
+    rank_r, bases_b, copies_c = w.shape
+    if vectors.shape[0] != n + rank_r * bases_b:
+        raise ValueError("angle table row count is inconsistent with W shape")
+    u = vectors[n:].reshape(rank_r, bases_b, n)
+    x = np.einsum("rbp,rbq,rbc->rcpq", u, u, w, optimize=True)
+    y = np.einsum("rbc,rcpq->rbpq", w, x, optimize=True)
+    two_body = 4.0 * np.einsum("rbpq,rbpq->rb", y, y, optimize=True).reshape(-1)
+    total = float(two_body.sum())
+    if not np.isfinite(total) or total <= 1e-30:
+        two_body = np.ones(rank_r * bases_b, dtype=np.float64)
+        total = float(two_body.sum())
+    one_body = np.full(n, total / n, dtype=np.float64)
+    return np.concatenate((one_body, two_body))
+
+
+def one_edge_swaps(tree: tuple[tuple[int, int], ...], n: int):
+    """Yield each tree obtainable by deleting one edge and adding one cross-cut edge."""
+    base = set(tree)
+    all_vertices = set(range(n))
+    for removed in sorted(base):
+        adjacency: list[list[int]] = [[] for _ in range(n)]
+        for a, b in base:
+            if (a, b) == removed:
+                continue
+            adjacency[a].append(b)
+            adjacency[b].append(a)
+        component = {removed[0]}
+        stack = [removed[0]]
+        while stack:
+            p = stack.pop()
+            for c in adjacency[p]:
+                if c not in component:
+                    component.add(c)
+                    stack.append(c)
+        other = all_vertices - component
+        reduced = base - {removed}
+        for a in sorted(component):
+            for b in sorted(other):
+                added = tuple(sorted((a, b)))
+                if added in base:
+                    continue
+                candidate = tuple(sorted(reduced | {added}))
+                yield candidate, removed, added
+
+
+def weighted_projector_distortion(
+    target: np.ndarray, decoded: np.ndarray, row_weights: np.ndarray
+) -> float:
+    """Sum_i weight_i ||u_i u_i^T - v_i v_i^T||_F^2, without forming projectors."""
+    overlap = np.sum(target * decoded, axis=1)
+    return float(np.sum(row_weights * 2.0 * np.maximum(0.0, 1.0 - np.square(overlap))))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument("--source-brot", type=int, default=12)
+    parser.add_argument("--target-brot", type=int, default=8)
+    parser.add_argument("--top-k", type=int, default=12)
+    parser.add_argument("--max-swaps", type=int, default=0, help="0 means examine all single-edge swaps")
+    parser.add_argument("--out", type=Path, default=Path("/tmp/dfthcsos-angle-tree"))
+    args = parser.parse_args()
+    if not 2 <= args.source_brot <= 16 or not 2 <= args.target_brot <= 16:
+        raise ValueError("brot must be between 2 and 16")
+    if args.top_k < 1:
+        raise ValueError("top-k must be positive")
+
+    with np.load(args.source, allow_pickle=False) as loaded:
+        data = {key: np.array(loaded[key]) for key in loaded.files}
+    if "angle_words" not in data or "tree_edges" not in data or "W" not in data:
+        raise ValueError("source NPZ must contain angle_words, tree_edges, and W")
+
+    source_words = data["angle_words"].astype(np.int64)
+    if np.any(source_words < 0) or np.any(source_words >= (1 << args.source_brot)):
+        raise ValueError("source angle words do not fit source-brot")
+    source_tree = canonical_tree(data["tree_edges"])
+    target_vectors = decode_words(source_words, data["tree_edges"], args.source_brot)
+    row_weights = proxy_row_weights(target_vectors, np.asarray(data["W"], dtype=np.float64))
+    orbital_weights = np.sum(row_weights[:, None] * np.square(target_vectors), axis=0)
+
+    base_proxy, base_order, _ = tree_order_and_proxy(source_tree, orbital_weights)
+    base_words = encode_vectors(target_vectors, base_order, args.target_brot)
+    base_decoded = decode_words(base_words, base_order, args.target_brot)
+    base_distortion = weighted_projector_distortion(target_vectors, base_decoded, row_weights)
+
+    heap: list[tuple[float, tuple[tuple[int, int], ...], tuple[int, int], tuple[int, int]]] = []
+    examined = 0
+    for candidate, removed, added in one_edge_swaps(source_tree, target_vectors.shape[1]):
+        score, _, _ = tree_order_and_proxy(candidate, orbital_weights)
+        examined += 1
+        item = (-score, candidate, removed, added)
+        if len(heap) < args.top_k:
+            heapq.heappush(heap, item)
+        elif score < -heap[0][0]:
+            heapq.heapreplace(heap, item)
+        if args.max_swaps and examined >= args.max_swaps:
+            break
+
+    shortlist = sorted(
+        [(-neg_score, candidate, removed, added) for neg_score, candidate, removed, added in heap],
+        key=lambda row: row[0],
+    )
+    args.out.mkdir(parents=True, exist_ok=True)
+    results = []
+    for rank, (proxy, candidate, removed, added) in enumerate(shortlist, start=1):
+        _, ordered_edges, _ = tree_order_and_proxy(candidate, orbital_weights)
+        words = encode_vectors(target_vectors, ordered_edges, args.target_brot)
+        decoded = decode_words(words, ordered_edges, args.target_brot)
+        distortion = weighted_projector_distortion(target_vectors, decoded, row_weights)
+        ratio = proxy / base_proxy if base_proxy else float("nan")
+
+        candidate_data = dict(data)
+        candidate_data["tree_edges"] = ordered_edges
+        candidate_data["angle_words"] = words
+        rank_r, bases_b, _ = np.asarray(data["W"]).shape
+        candidate_data["U"] = decoded[target_vectors.shape[1] - rank_r * bases_b :].reshape(
+            rank_r, bases_b, target_vectors.shape[1]
+        )
+        np.savez_compressed(args.out / f"candidate_{rank:03d}.npz", **candidate_data)
+        results.append(
+            {
+                "rank": rank,
+                "proxy_J": proxy,
+                "proxy_ratio_vs_reordered_baseline": ratio,
+                "weighted_projector_distortion": distortion,
+                "removed_edge": list(removed),
+                "added_edge": list(added),
+                "tree_edges": ordered_edges.tolist(),
+                "artifact": f"candidate_{rank:03d}.npz",
+            }
+        )
+
+    report = {
+        "status": "SCREEN_ONLY",
+        "source": str(args.source),
+        "source_brot": args.source_brot,
+        "target_brot": args.target_brot,
+        "vectors": int(target_vectors.shape[0]),
+        "orbitals": int(target_vectors.shape[1]),
+        "single_edge_swaps_examined": examined,
+        "baseline_proxy_J": base_proxy,
+        "baseline_reordered_projector_distortion": base_distortion,
+        "top_candidates": results,
+        "warning": "No physical metrics, ANGLE circuit costs, or official verification were run.",
+    }
+    (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == "__main__":
+    main()
