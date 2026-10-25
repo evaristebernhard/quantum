@@ -60,3 +60,13 @@ python experiments/dfthcsos-angle-tree/tree_proxy.py \
 ```
 
 The script uses NumPy only. It writes a JSON report and one NPZ per shortlisted candidate. The NPZs are **screening artifacts**, not submissions until matching ANGLE circuits are built and the full verifier passes.
+
+## Cheap exact contraction for the two-body sensitivity
+
+The sensitivity norms are computed without materializing the large X matrices or any N^4 tensor. Define K_r = W_r W_r^T, G_r = U_r U_r^T, and H_r = G_r elementwise-multiplied by itself. Then
+
+\[
+\|Y_{rb}\|_F^2 = (K_r H_r K_r)_{bb}.
+\]
+
+This follows from \(\langle u_bu_b^T,u_{b'}u_{b'}^T\rangle=(u_b^T u_{b'})^2\). The contraction costs O(R B^3 + R B^2 N), so the screening stage avoids the much larger O(R B C N^2) matrix construction.
