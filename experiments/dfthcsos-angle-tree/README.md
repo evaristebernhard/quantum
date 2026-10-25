@@ -47,7 +47,7 @@ The perturbation of the Gram tensor caused by a projector perturbation \(D\) in 
 
 The proxy is an expected-error / sensitivity bound, not a prediction of the official score. Deterministic rounding, interactions among rows, the one-body eigenvector assignment, the SOS gap, normalization, and actual ANGLE-circuit cost can change the ranking. Only candidates that pass the unchanged official verifier count as valid.
 
-The topology screen re-encodes shortlisted trees in the signed angle gauge, so at brot=8 the top two word bits are equal. A second pass locally reorders adjacent, disjoint commuting edges to reduce the active-bit proxy of the signed select-swap QROM. Neither pass compiles ANGLE circuits or measures exact Toffoli cost.
+The topology screen re-encodes shortlisted trees in the signed angle gauge, so at brot=8 the top two word bits are equal. A second pass samples valid topological edge orders and scores both active payload bits and a recursive QROM node-cost proxy. Neither pass compiles ANGLE circuits or measures exact Toffoli cost.
 
 ## Run
 
@@ -61,7 +61,7 @@ python experiments/dfthcsos-angle-tree/tree_proxy.py \
 
 The script uses NumPy only. It writes a JSON report and one NPZ per shortlisted candidate. The NPZs are **screening artifacts**, not submissions until matching ANGLE circuits are built and the full verifier passes.
 
-The edge-order pass permutes each edge and its angle-word column together. It only swaps disjoint edges with no ancestor relation, so the rotations commute and the verifier's parent-before-child requirement remains valid. For batch width J, it precomputes the bitwise OR of pairwise row differences for each column and column pair; each batch's active-bit count is then evaluated from these masks without rebuilding a circuit.
+The edge-order pass permutes each edge and its angle-word column together. Its precedence DAG preserves parent-before-child order and the existing order of sibling edges; every permitted topological ordering therefore only reorders commuting rotations. For batch width J, the active-bit masks are precomputed, and a recursive QROM-node proxy counts nonconstant table subtrees without building a circuit. This proxy omits fixed high-address controls and the select-swap/unlookup overhead, so it is not an exact Toffoli count.
 
 ## Cheap exact contraction for the two-body sensitivity
 
