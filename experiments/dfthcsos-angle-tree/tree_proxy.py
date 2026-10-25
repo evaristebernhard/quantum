@@ -40,23 +40,43 @@ def decode_words(words: np.ndarray, edges: np.ndarray, brot: int) -> np.ndarray:
 
 
 def encode_vectors(vectors: np.ndarray, ordered_edges: np.ndarray, brot: int) -> np.ndarray:
-    """Inverse Givens elimination, then round angles modulo the unsigned word range."""
+    """Inverse Givens elimination with a signed gauge and modular integer words."""
     work = np.asarray(vectors, dtype=np.float64).copy()
     edges = np.asarray(ordered_edges, dtype=np.int64)
     num_angles = work.shape[1] - 1
     if edges.shape != (num_angles, 2):
         raise ValueError(f"expected {(num_angles, 2)} ordered edges, got {edges.shape}")
-    theta = np.zeros((work.shape[0], num_angles), dtype=np.float64)
+    step = np.pi / (1 << (brot - 1))
+    half = 1 << (brot - 2)
+    signed_words = np.zeros((work.shape[0], num_angles), dtype=np.int64)
     for j in reversed(range(num_angles)):
         parent, child = edges[j]
         vp = work[:, parent].copy()
         vc = work[:, child].copy()
-        theta[:, j] = np.arctan2(vc, vp)
-        work[:, parent] = np.hypot(vp, vc)
+        theta = np.arctan2(vc, vp)
+        flip = np.ones(work.shape[0], dtype=np.float64)
+
+        # Shift angles outside [-pi/2, pi/2) by pi; the retained parent
+        # amplitude changes sign, which is a gauge transformation of the
+        # same final projector.
+        high = theta >= np.pi / 2
+        low = theta < -np.pi / 2
+        theta[high] -= np.pi
+        theta[low] += np.pi
+        flip[high | low] = -1.0
+
+        q = np.rint(theta / step).astype(np.int64)
+        # +half has no signed (brot-1)-bit representation. Use -half and
+        # flip the retained amplitude, the exact boundary gauge correction.
+        boundary = q >= half
+        q[boundary] = -half
+        flip[boundary] *= -1.0
+        q = np.clip(q, -half, half - 1)
+        signed_words[:, j] = q
+        work[:, parent] = flip * np.hypot(vp, vc)
         work[:, child] = 0.0
-    step = np.pi / (1 << (brot - 1))
-    words = np.rint(theta / step).astype(np.int64) % (1 << brot)
-    return words
+
+    return signed_words % (1 << brot)
 
 
 def tree_order_and_proxy(
