@@ -1,0 +1,9 @@
+{
+  "source_url": "https://www.kaggle.com/api/v1/datasets/download/heliosli/qcc-circuits-live?datasetVersionNumber=23",
+  "archive_sha256": "451ebb152648cc3280e335a55acf7058be94537c9fd36b2a5b6d0c38e76e2ed2",
+  "git_head": "49a7182a2e93de875ba61bbd7745df562093306a",
+  "kickmix_version": "1.0.0",
+  "mode": "quick-only",
+  "max_cores": 4,
+  "full_verification": false
+}

@@ -1,0 +1,26 @@
+{
+  "status": "PASS",
+  "score": 101002.53550915231,
+  "toffoli_equivalent": 1629.0731533734242,
+  "toffoli_count": 1332.481632008272,
+  "max_toffoli_count": 1502,
+  "t_count": 7.0027899050245095,
+  "rotation_count": 41.0,
+  "rotation_eps": 2.434041480874084e-13,
+  "num_qubits": 62,
+  "reaction_depth": 805,
+  "num_ops": 47190,
+  "verified_shots": 3133440,
+  "worst_error_over_tolerance": 0.9993237694056958,
+  "worst_x": 161,
+  "circuit_sha256": "a568bc79348165bad5be2349960d200300c5639ffd2142aca6d548e764a399d9",
+  "process_exit_code": 0,
+  "wall_seconds": 12.012898812998174,
+  "verification_mode": "1 shot per input x=1..3133440 plus 256-shot check of the 12 largest inputs; measurement outcomes sampled once each, not the official 64-shot full verification",
+  "highest_12_input_boundary_check": {
+    "status": "PASS",
+    "shots": 256,
+    "worst_error_over_tolerance": 0.5010771549406987
+  },
+  "quick_cost_ratio": 20.5616049463144
+}

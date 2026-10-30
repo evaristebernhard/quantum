@@ -1,0 +1,6 @@
+candidate/
+official_snapshot/
+*.zip
+__pycache__/
+*.stdout.txt
+*.stderr.txt

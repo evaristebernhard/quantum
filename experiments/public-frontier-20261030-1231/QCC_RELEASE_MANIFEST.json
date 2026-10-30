@@ -1,0 +1,121 @@
+{
+ "portfolio": "v44_yb",
+ "salt": "notebook-verification",
+ "reference_costs": {
+  "invsqrt": 2076774.233715282,
+  "dfthcsos": 3355599588.3155375,
+  "dqi": 24439463583672.93
+ },
+ "files": [
+  {
+   "file": "dfthcsos/angle_k_0.kmb",
+   "stored_as": "dfthcsos__angle_k_0.kmb",
+   "sha256": "9c31da0c1d047e7dcac638df807d3cef96eac6f736a8838a0ae6943e9c46c74f",
+   "bytes": 400395
+  },
+  {
+   "file": "dfthcsos/angle_k_1.kmb",
+   "stored_as": "dfthcsos__angle_k_1.kmb",
+   "sha256": "39b8d10098be097f75148639ee302249bdabe112a9278a48565eadb0cb86810b",
+   "bytes": 400453
+  },
+  {
+   "file": "dfthcsos/angle_k_10.kmb",
+   "stored_as": "dfthcsos__angle_k_10.kmb",
+   "sha256": "e75f6b0685d754bf76f3f4d62589bf1d07b118faeeb0ab8745833733286db2fc",
+   "bytes": 352755
+  },
+  {
+   "file": "dfthcsos/angle_k_11.kmb",
+   "stored_as": "dfthcsos__angle_k_11.kmb",
+   "sha256": "773e54f6f0d7c3f769db433f263d541cdcff1076fb75109740907e3249996141",
+   "bytes": 308137
+  },
+  {
+   "file": "dfthcsos/angle_k_12.kmb",
+   "stored_as": "dfthcsos__angle_k_12.kmb",
+   "sha256": "d86ca7ddd984059ded765b953cc936388517a7ca5789676ae90910a2be89769d",
+   "bytes": 352979
+  },
+  {
+   "file": "dfthcsos/angle_k_13.kmb",
+   "stored_as": "dfthcsos__angle_k_13.kmb",
+   "sha256": "50d82cf65116f06c0fe469ebba312f72675b277263461ab88b4d15eca947c050",
+   "bytes": 308119
+  },
+  {
+   "file": "dfthcsos/angle_k_14.kmb",
+   "stored_as": "dfthcsos__angle_k_14.kmb",
+   "sha256": "ae2070998e31b7e05d01183914df20b6974c1760bddf90d1adac86ea75c7bf3f",
+   "bytes": 352701
+  },
+  {
+   "file": "dfthcsos/angle_k_2.kmb",
+   "stored_as": "dfthcsos__angle_k_2.kmb",
+   "sha256": "2e8dfdeb69c496e9e510fe99722153663760980d45c35ad9b72e79ba799dde49",
+   "bytes": 394618
+  },
+  {
+   "file": "dfthcsos/angle_k_3.kmb",
+   "stored_as": "dfthcsos__angle_k_3.kmb",
+   "sha256": "13817cf8d36ea112e62d7863edde2193aa5907dd0605612c4f0e1e54bacc173b",
+   "bytes": 396782
+  },
+  {
+   "file": "dfthcsos/angle_k_4.kmb",
+   "stored_as": "dfthcsos__angle_k_4.kmb",
+   "sha256": "8dce8f4a380998d818bf8a08e4f3daa62aaeb31a25d084aa57549f931a937f3d",
+   "bytes": 356137
+  },
+  {
+   "file": "dfthcsos/angle_k_5.kmb",
+   "stored_as": "dfthcsos__angle_k_5.kmb",
+   "sha256": "42cf7d76ef0f0b36640a9e65005214fdd4d9a9bb82b8cef6e658dbbdd8417099",
+   "bytes": 310562
+  },
+  {
+   "file": "dfthcsos/angle_k_6.kmb",
+   "stored_as": "dfthcsos__angle_k_6.kmb",
+   "sha256": "7fd7bd333b1427ecf546b0c27717ed9428e255e5165c4db14e5f95f8af45c838",
+   "bytes": 351298
+  },
+  {
+   "file": "dfthcsos/angle_k_7.kmb",
+   "stored_as": "dfthcsos__angle_k_7.kmb",
+   "sha256": "809a775b98836ee00e8783d3f616bb8517bb3a3621978bc704d20b543a8df4ec",
+   "bytes": 304732
+  },
+  {
+   "file": "dfthcsos/angle_k_8.kmb",
+   "stored_as": "dfthcsos__angle_k_8.kmb",
+   "sha256": "42d0deb376981d0470bebdd370ca2adf79685b4bf3e6909be262e2beced030ec",
+   "bytes": 352967
+  },
+  {
+   "file": "dfthcsos/angle_k_9.kmb",
+   "stored_as": "dfthcsos__angle_k_9.kmb",
+   "sha256": "f1c49e7cf8e4f3a9adaffe167d2bbe21497a52eca2c7d09f765fc5a125e304c3",
+   "bytes": 307434
+  },
+  {
+   "file": "dfthcsos/submission.npz",
+   "stored_as": "dfthcsos__submission.npz",
+   "sha256": "6503daaba4b703c74e4469d077c276215e43a4d238e7be719eba50a85504973b",
+   "bytes": 1999484
+  },
+  {
+   "file": "dqi.kmb",
+   "stored_as": "dqi.kmb.xz",
+   "sha256": "7a378f4755605e0c5fa6117f808891bf8dcf0797d047155e6d4c9e75e3c99421",
+   "bytes": 544419428
+  },
+  {
+   "file": "invsqrt.kmb",
+   "stored_as": "invsqrt.kmb",
+   "sha256": "a568bc79348165bad5be2349960d200300c5639ffd2142aca6d548e764a399d9",
+   "bytes": 468143
+  }
+ ],
+ "extras": [],
+ "local_metric": {}
+}

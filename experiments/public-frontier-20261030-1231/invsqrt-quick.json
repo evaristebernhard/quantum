@@ -1,0 +1,7 @@
+{
+  "status": "FAIL",
+  "error": "num_shots must be a multiple of batch_size=256, got 3133452.",
+  "process_exit_code": 1,
+  "wall_seconds": 0.22791042500102776,
+  "verification_mode": "reduced-shot quick check, not full official verification"
+}
